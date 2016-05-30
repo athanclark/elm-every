@@ -1,10 +1,8 @@
 module Every exposing
-  ( Every
-  , initEvery
-  , EveryMsg (Start, Stop)
-  , EveryResults
-  , handleEveryResults
-  , updateEvery
+  ( Model
+  , init
+  , Msg (Start, Stop)
+  , update
   )
 
 {-|
@@ -16,23 +14,19 @@ the system.
 
 ## Polling State
 
-@docs Every
+@docs Model
 
-@docs initEvery
+@docs init
 
 
 ## Polling Invocation
 
-@docs EveryMsg
+@docs Msg
 
 
 ## Polling Enactment
 
-@docs updateEvery
-
-@docs EveryResults
-
-@docs handleEveryResults
+@docs update
 
 -}
 
@@ -42,21 +36,24 @@ import Task
 
 
 
-type alias Elapsed =
-  { soFar  : Time
-  , toWait : Time
+type alias Elapsed b =
+  { waitTil : Time
+  , soFar   : Time
+  , toWait  : Time
+  , state   : Maybe b
   }
 
 {-| The state of the poller
 -}
-type alias Every b =
-  { elapsed : Maybe (Elapsed, b)
+type alias Model b =
+  { elapsed : Maybe (Elapsed b)
   }
 
-{-| Initial state of the poller
+{-| Initial state of the poller, where `b` is the type of message
+    to send on completion.
 -}
-initEvery : Every b
-initEvery =
+init : Model b
+init =
   { elapsed = Nothing
   }
 
@@ -64,76 +61,92 @@ initEvery =
     either initialization (or new input data for the action
     to be dispatched), or a cease-and-desist call.
 -}
-type EveryMsg b
-  = Start b
-  | Invoke
+type Msg b
+  = Start (Maybe b -> Maybe b)
+  | SetWait Time
+  | Invoke Time
   | Stop
 
-{-| The type of results during update - either another `EveryMsg`,
-    or an actual action to be dispatched. This is all handled under-the-hood
-    with `handleEveryResults`.
--}
-type EveryResults b a
-  = More (EveryMsg b)
-  | Issue a
-
-{-| Given a way to integrate an `EveryMsg` into your action type,
-    you can turn a `EveryResults` into your action type.
--}
-handleEveryResults : (EveryMsg b -> a) -> EveryResults b a -> a
-handleEveryResults f m =
-  case m of
-    More x  -> f x
-    Issue x -> x
 
 {-| Given a method to compute the duration to wait until the next action is issued
     (calculated from the total time elapsed `total -> delay`), and the main action to
     issue, build an updating component.
 -}
-updateEvery : (Time -> Time)
-           -> (b -> a)
-           -> EveryMsg b
-           -> Every b
-           -> (Every b, Cmd (EveryResults b a))
-updateEvery duration mainAction action model =
+update : (Maybe b -> Time -> Time)
+      -> (Maybe b -> Cmd a)
+      -> Msg b
+      -> Model b
+      -> (Model b, Cmd (Result a (Msg b)))
+update duration actions action model =
   case action of
-    Start x ->
+    Start addState ->
       case model.elapsed of
         Nothing ->
-          ( { model | elapsed = Just ( { soFar = 0
-                                       , toWait = duration 0
-                                       }
-                                     , x
-                                     )
-            }
-          , Task.perform Debug.crash (\_ -> More Invoke)
-              <| Process.sleep (duration 0)
-          )
-        Just (elap, _) ->
-          ( { model | elapsed = Just (elap, x) } -- update data
-          , Cmd.none
-          )
-    Invoke ->
-      case model.elapsed of
-        Nothing ->
-          ( initEvery -- was stopped before completion
-          , Cmd.none
-          )
-        Just (elap,x) ->
-          let total = elap.soFar + elap.toWait
-              newDuration = duration total
-          in  ( { model | elapsed = Just ( { soFar = total, toWait = newDuration }
-                                         , x
-                                         )
+          let newState = addState Nothing
+              newDuration = duration newState 0
+          in  ( { model | elapsed = Just { waitTil = 0 -- overwrite immediately
+                                         , soFar = 0
+                                         , toWait = newDuration
+                                         , state = newState
+                                         }
                 }
               , Cmd.batch
-                  [ Task.perform Debug.crash (\x -> x)
-                      <| Task.succeed <| Issue <| mainAction x
-                  , Task.perform Debug.crash (\_ -> More Invoke)
-                      <| Process.sleep newDuration
+                  [ Task.perform Debug.crash (Ok << SetWait) Time.now
+                  , Task.perform Debug.crash (Ok << Invoke)
+                      <| Process.sleep newDuration `Task.andThen`
+                         \_ -> Time.now
+                  , Cmd.map Err <| actions newState
                   ]
               )
+        Just elap ->
+          let newState = addState elap.state
+              newDuration = duration newState 0
+          in  ( { model | elapsed = Just { elap | soFar = 0
+                                                , toWait = newDuration
+                                                , state = newState
+                                         }
+                } -- update data
+              , Cmd.batch
+                  [ Task.perform Debug.crash (Ok << SetWait) Time.now
+                  , Task.perform Debug.crash (Ok << Invoke)
+                      <| Process.sleep newDuration `Task.andThen`
+                         \_ -> Time.now
+                  , Cmd.map Err <| actions newState
+                  ]
+              )
+    SetWait now ->
+      ( case model.elapsed of
+          Nothing -> model -- stopped before last issued
+          Just elap ->
+            { model | elapsed = Just { elap | waitTil = now + elap.toWait }
+            }
+      , Cmd.none
+      )
+    Invoke now ->
+      case model.elapsed of
+        Nothing ->
+          ( init -- was stopped before completion
+          , Cmd.none
+          )
+        Just elap ->
+          if now >= elap.waitTil
+          then let newSoFar = elap.soFar + elap.toWait
+                   newDuration = duration elap.state newSoFar
+               in  ( { model | elapsed = Just { elap | soFar = newSoFar
+                                                     , toWait = newDuration
+                                              }
+                     }
+                   , Cmd.batch
+                       [ Cmd.map Err <| actions elap.state
+                       , Task.perform Debug.crash (Ok << Invoke)
+                           <| Process.sleep newDuration `Task.andThen`
+                                \_ -> Time.now
+                       ]
+                   )
+          else ( model -- debounce
+               , Cmd.none
+               )
     Stop ->
-      ( initEvery
+      ( init
       , Cmd.none
       )
