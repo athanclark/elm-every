@@ -2,7 +2,7 @@ module Every exposing
   ( Model
   , init
   , Msg (Start, Stop)
-  , ModifyData
+  , ModifyData (..)
   , Modify
   , update
   )
