@@ -95,7 +95,6 @@ update duration actions action model =
                   , Task.perform Debug.crash (Ok << Invoke)
                       <| Process.sleep newDuration `Task.andThen`
                          \_ -> Time.now
-                  , Cmd.map Err <| actions newState
                   ]
               )
         Just elap ->
@@ -111,7 +110,6 @@ update duration actions action model =
                   , Task.perform Debug.crash (Ok << Invoke)
                       <| Process.sleep newDuration `Task.andThen`
                          \_ -> Time.now
-                  , Cmd.map Err <| actions newState
                   ]
               )
     SetWait now ->
