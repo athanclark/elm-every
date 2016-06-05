@@ -120,7 +120,7 @@ update duration actions action model =
                              case md of
                                Update addState -> addState elap.state
                                Assign state    -> Just state
-              newDuration = duration newState 0
+              newDuration = duration newState elap.soFar
           in  ( { model | elapsed = Just { elap | soFar = if modifier.resetSoFar
                                                           then 0
                                                           else elap.soFar
