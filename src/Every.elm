@@ -2,6 +2,8 @@ module Every exposing
   ( Model
   , init
   , Msg (Start, Stop)
+  , ModifyData
+  , Modify
   , update
   )
 
@@ -14,14 +16,12 @@ the system.
 
 ## Polling State
 
-@docs Model
-
-@docs init
+@docs Model, init
 
 
 ## Polling Invocation
 
-@docs Msg
+@docs Msg, ModifyData, Modify
 
 
 ## Polling Enactment
@@ -57,12 +57,23 @@ init =
   { elapsed = Nothing
   }
 
+{-| Either adjust the potentially stored data, or just assign some. -}
+type ModifyData b
+  = Update (Maybe b -> Maybe b)
+  | Assign b
+
+{-| We can modify the stored data, and also reset the accrued time so far. -}
+type alias Modify b =
+  { resetSoFar : Bool
+  , modifyData : Maybe (ModifyData b)
+  }
+
 {-| The type of messages you can send to the poller -
     either initialization (or new input data for the action
     to be dispatched), or a cease-and-desist call.
 -}
 type Msg b
-  = Start (Maybe b -> Maybe b)
+  = Start (Modify b)
   | SetWait Time
   | Invoke Time
   | Stop
@@ -79,10 +90,15 @@ update : (Maybe b -> Time -> Time)
       -> (Model b, Cmd (Result a (Msg b)))
 update duration actions action model =
   case action of
-    Start addState ->
+    Start modifier ->
       case model.elapsed of
         Nothing ->
-          let newState = addState Nothing
+          let newState = case modifier.modifyData of
+                           Nothing -> Nothing
+                           Just md ->
+                             case md of
+                               Update addState -> addState Nothing
+                               Assign state    -> Just state
               newDuration = duration newState 0
           in  ( { model | elapsed = Just { waitTil = 0 -- overwrite immediately
                                          , soFar = 0
@@ -98,9 +114,16 @@ update duration actions action model =
                   ]
               )
         Just elap ->
-          let newState = addState elap.state
+          let newState = case modifier.modifyData of
+                           Nothing -> elap.state
+                           Just md ->
+                             case md of
+                               Update addState -> addState elap.state
+                               Assign state    -> Just state
               newDuration = duration newState 0
-          in  ( { model | elapsed = Just { elap | soFar = 0
+          in  ( { model | elapsed = Just { elap | soFar = if modifier.resetSoFar
+                                                          then 0
+                                                          else elap.soFar
                                                 , toWait = newDuration
                                                 , state = newState
                                          }
