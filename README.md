@@ -14,24 +14,37 @@ to stop the poller, just issue `Stop`.
 
 
 ```elm
+import Every
+
+
+type alias EveryState =
+  { kickoffCount : Int
+  }
+
 type alias MyModel =
   { mySession : SessionModel
-  , poller : Every
+  , poller    : Every.Model EveryState
   }
 
 initMyModel : MyModel
 initMyModel =
   { mySession = initSession
-  , poller = initEvery
+  , poller    = Every.init
   }
 
 type MyAction
   = SessionMsg SessionMsg
-  | EveryMsg EveryMsg
+  | EveryMsg (Every.Msg EveryState)
+  | KickStart
 
 -- we're calculating the time to add to the total, based on the current total.
-fibbDelay : Time -> Time
-fibbDelay total = total
+fibbDelay : Maybe EveryState -> Time -> Time
+fibbDelay _ total = total
+
+issueMsg : Maybe EveryState -> Msg
+issueMsg ms =
+  -- ...
+
 
 updateModel : MyAction
            -> MyModel
@@ -44,16 +57,28 @@ updateModel action model =
           , Cmd.map SessionMsg eff
           )
     EveryMsg a ->
-      let (newEvery, eff) = updateEvery fibbDelay (\v -> SessionMsg <| UpdateSession v)
-                              a model.poller
+      let (newEvery, eff) = updateEvery
+                              fibbDelay
+                              issueMsg
+                              a
+                              model.poller
       in  ( { model | poller = newEvery }
-          , Cmd.map (handleEveryResults EveryMsg) eff
+          , Cmd.map (\r -> case r of
+                             Err x -> x -- resolve issued data
+                             Ok  x -> EveryMsg x) eff
           )
+    KickStart ->
+      ( model
+      , Task.perform (Debug.crash << toString) EveryMsg
+        <| Every.Start { resetSoFar = True
+                       , modifyData = Just <| Every.Update <| \ms ->
+                           case ms of
+                             Nothing ->
+                               { kickoffCount = 1
+                               }
+                             Just ks ->
+                               { kickoffCount = ks.kickoffCount + 1
+                               }
+                       }
+      )
 ```
-
-Then somewhere, you would _set_ the `v` value with `EveryMsg <| Start v`, and
-logout or something similar with `EveryMsg Stop`. This isn't a very realistic
-example though - why would we wait for session tokens at a Fibbonacci scale?
-Who knows :) It would probably be more realistic with something like `\_ -> second`
-or something, and _inside_ the `updateSession` routine, we pack in `Start v` with
-a new session token to check or something.
