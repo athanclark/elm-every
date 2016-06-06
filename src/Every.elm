@@ -34,17 +34,14 @@ import Task
 
 
 
-{-| The state of the poller
--}
+{-| -}
 type alias Model b =
   { threadId : Int
   , data     : b
   , stop     : Bool
   }
 
-{-| Initial state of the poller, where `b` is the type of message
-    to send on completion.
--}
+{-| -}
 init : b -> Model b
 init initB =
   { threadId = 0
@@ -52,13 +49,10 @@ init initB =
   , stop = False
   }
 
-{-| The type of messages you can send to the poller:
-- start a new thread, all with shared data
-- adjust the data stored
+{-| The type of messages you can send to poll:
+- start again, debouncing and adjusting the data
+- adjust the data stored and optionally debounce
 - stop all threads
-
-The api is a bit weird for now; I just can't manage a clean one. Expect changes in
-the next version!
 -}
 type Msg b
   = Start (b -> b)
@@ -73,9 +67,12 @@ freshThreadId : Model b -> (Int, Model b)
 freshThreadId model =
   (model.threadId, { model | threadId = model.threadId + 1 })
 
-{-| Given a method to compute the duration to wait until the next action is issued
-    (calculated from the total time elapsed `total -> delay`), and the main action to
-    issue, build an updating component.
+{-|
+Given a method to compute the duration to wait until the next action is issued
+(calculated from the total time elapsed `total -> delay`), and the main action to
+issue, build an updating component.
+
+Also notice that this does not fire immediately.
 -}
 update : (b -> Time -> Time)
       -> (b -> Cmd a)
