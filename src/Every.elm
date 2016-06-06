@@ -2,8 +2,6 @@ module Every exposing
   ( Model
   , init
   , Msg (Start, Adjust, Stop)
-  , ModifyData (..)
-  , Modify
   , update
   )
 
@@ -21,7 +19,7 @@ the system.
 
 ## Polling Invocation
 
-@docs Msg, ModifyData, Modify
+@docs Msg
 
 
 ## Polling Enactment
@@ -36,36 +34,22 @@ import Task
 
 
 
-type alias Elapsed b =
-  { waitTil : Time
-  , soFar   : Time
-  , toWait  : Time
-  , state   : Maybe b
-  }
-
 {-| The state of the poller
 -}
 type alias Model b =
-  { elapsed : Maybe (Elapsed b)
+  { threadId : Int
+  , data     : b
+  , stop     : Bool
   }
 
 {-| Initial state of the poller, where `b` is the type of message
     to send on completion.
 -}
-init : Model b
-init =
-  { elapsed = Nothing
-  }
-
-{-| Either adjust the potentially stored data, or just assign some. -}
-type ModifyData b
-  = Update (Maybe b -> Maybe b)
-  | Assign b
-
-{-| We can modify the stored data, and also reset the accrued time so far. -}
-type alias Modify b =
-  { resetSoFar : Bool
-  , modifyData : Maybe (ModifyData b)
+init : b -> Model b
+init initB =
+  { threadId = 0
+  , data = initB
+  , stop = False
   }
 
 {-| The type of messages you can send to the poller:
@@ -77,120 +61,67 @@ The api is a bit weird for now; I just can't manage a clean one. Expect changes 
 the next version!
 -}
 type Msg b
-  = Start (Modify b)
-  | Adjust (Modify b)
-  | SetWait Time
-  | Invoke Time
+  = Start (b -> b)
+  | Adjust { modify : b -> b
+           , reset  : Bool
+           }
+  | Invoke Int Time
   | Stop
 
+
+freshThreadId : Model b -> (Int, Model b)
+freshThreadId model =
+  (model.threadId, { model | threadId = model.threadId + 1 })
 
 {-| Given a method to compute the duration to wait until the next action is issued
     (calculated from the total time elapsed `total -> delay`), and the main action to
     issue, build an updating component.
 -}
-update : (Maybe b -> Time -> Time)
-      -> (Maybe b -> Cmd a)
+update : (b -> Time -> Time)
+      -> (b -> Cmd a)
       -> Msg b
       -> Model b
       -> (Model b, Cmd (Result a (Msg b)))
 update duration actions action model =
-  case action of
+  let (threadId, model') = freshThreadId model
+  in case action of
     Start modifier ->
-      case model.elapsed of
-        Nothing ->
-          let newState = case modifier.modifyData of
-                           Nothing -> Nothing
-                           Just md ->
-                             case md of
-                               Update addState -> addState Nothing
-                               Assign state    -> Just state
-              newDuration = duration newState 0
-          in  ( { model | elapsed = Just { waitTil = 0 -- overwrite immediately
-                                         , soFar = 0
-                                         , toWait = newDuration
-                                         , state = newState
-                                         }
-                }
-              , Cmd.batch
-                  [ Task.perform Debug.crash (Ok << SetWait) Time.now
-                  , Task.perform Debug.crash (Ok << Invoke)
-                      <| Process.sleep newDuration `Task.andThen`
-                         \_ -> Time.now
-                  ]
-              )
-        Just elap ->
-          let newState = case modifier.modifyData of
-                           Nothing -> elap.state
-                           Just md ->
-                             case md of
-                               Update addState -> addState elap.state
-                               Assign state    -> Just state
-              newDuration = duration newState elap.soFar
-          in  ( { model | elapsed = Just { elap | soFar = if modifier.resetSoFar
-                                                          then 0
-                                                          else elap.soFar
-                                                , toWait = newDuration
-                                                , state = newState
-                                         }
-                } -- update data
-              , Cmd.batch
-                  [ Task.perform Debug.crash (Ok << SetWait) Time.now
-                  , Task.perform Debug.crash (Ok << Invoke)
-                      <| Process.sleep newDuration `Task.andThen`
-                         \_ -> Time.now
-                  ]
-              )
-    Adjust modifier ->
-      case model.elapsed of
-        Nothing -> (model, Cmd.none)
-        Just elap ->
-          let newState = case modifier.modifyData of
-                           Nothing -> elap.state
-                           Just md ->
-                             case md of
-                               Update addState -> addState elap.state
-                               Assign state    -> Just state
-          in  ( { model | elapsed = Just { elap | soFar = if modifier.resetSoFar
-                                                          then 0
-                                                          else elap.soFar
-                                                , state = newState
-                                         }
-                } -- update data
-              , Cmd.none
-              )
-    SetWait now ->
-      ( case model.elapsed of
-          Nothing -> model -- stopped before last issued
-          Just elap ->
-            { model | elapsed = Just { elap | waitTil = now + elap.toWait }
+      let firstDuration = duration model.data 0
+      in  ( { model' | data = modifier model'.data
+                     , stop = False
             }
-      , Cmd.none
-      )
-    Invoke now ->
-      case model.elapsed of
-        Nothing ->
-          ( init -- was stopped before completion
-          , Cmd.none
+          , Task.perform (Debug.crash << toString) (\_ -> Ok <| Invoke threadId firstDuration)
+              <| Process.sleep firstDuration
           )
-        Just elap ->
-          if now >= elap.waitTil
-          then let newSoFar = elap.soFar + elap.toWait
-                   newDuration = duration elap.state newSoFar
-               in  ( { model | elapsed = Just { elap | soFar = newSoFar
-                                                     , toWait = newDuration
-                                              }
-                     }
-                   , Cmd.batch
-                       [ Cmd.map Err <| actions elap.state
-                       , Task.perform Debug.crash (Ok << Invoke)
-                           <| Process.sleep newDuration `Task.andThen`
-                                \_ -> Time.now
-                       ]
-                   )
-          else ( model -- debounce
-               , Cmd.none
-               )
+    Adjust modifier ->
+      let newData = modifier.modify model.data
+      in if modifier.reset
+      then let firstDuration = duration model.data 0
+      in   ( { model' | data = newData
+                      , stop = False
+             }
+           , Task.perform (Debug.crash << toString) (\_ -> Ok <| Invoke threadId firstDuration)
+               <| Process.sleep firstDuration
+           )
+      else ( { model | data = newData }
+           , Cmd.none
+           )
+    Invoke threadId' soFar ->
+      if model.stop
+      then (model, Cmd.none)
+      else if model.threadId - 1 == threadId' -- wouldve been the last id before I added one
+      then let newDuration = duration model.data soFar
+      in   ( model'
+           , Cmd.batch
+               [ Cmd.map Err <| actions model.data
+               , Task.perform Debug.crash (\_ -> Ok <| Invoke threadId newDuration)
+                   <| Process.sleep newDuration
+               ]
+           )
+      else ( model -- debounce
+           , Cmd.none
+           )
     Stop ->
-      ( init
+      ( { model | stop = True }
       , Cmd.none
       )
