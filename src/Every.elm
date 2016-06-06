@@ -68,12 +68,17 @@ type alias Modify b =
   , modifyData : Maybe (ModifyData b)
   }
 
-{-| The type of messages you can send to the poller -
-    either initialization (or new input data for the action
-    to be dispatched), or a cease-and-desist call.
+{-| The type of messages you can send to the poller:
+- start a new thread, all with shared data
+- adjust the data stored
+- stop all threads
+
+The api is a bit weird for now; I just can't manage a clean one. Expect changes in
+the next version!
 -}
 type Msg b
   = Start (Modify b)
+  | Adjust (Modify b)
   | SetWait Time
   | Invoke Time
   | Stop
@@ -134,6 +139,24 @@ update duration actions action model =
                       <| Process.sleep newDuration `Task.andThen`
                          \_ -> Time.now
                   ]
+              )
+    Adjust modifier ->
+      case model.elapsed of
+        Nothing -> (model, Cmd.none)
+        Just elap ->
+          let newState = case modifier.modifyData of
+                           Nothing -> elap.state
+                           Just md ->
+                             case md of
+                               Update addState -> addState elap.state
+                               Assign state    -> Just state
+          in  ( { model | elapsed = Just { elap | soFar = if modifier.resetSoFar
+                                                          then 0
+                                                          else elap.soFar
+                                                , state = newState
+                                         }
+                } -- update data
+              , Cmd.none
               )
     SetWait now ->
       ( case model.elapsed of
