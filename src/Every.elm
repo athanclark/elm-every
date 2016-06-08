@@ -3,6 +3,7 @@ module Every exposing
   , init
   , Msg (Start, Adjust, Stop)
   , update
+  , waitingFor
   )
 
 {-|
@@ -24,7 +25,7 @@ the system.
 
 ## Polling Enactment
 
-@docs update
+@docs update, waitingFor
 
 -}
 
@@ -34,19 +35,25 @@ import Task
 
 
 
-{-| -}
+{-|
+The state of the loop. Note that `soFar` is a block-like metric: it doesn't
+change dynamically over the duration of time, but is rather the last-known
+input to the new duration function.
+-}
 type alias Model b =
   { threadId : Int
   , data     : b
   , stop     : Bool
+  , soFar    : Time
   }
 
 {-| -}
 init : b -> Model b
 init initB =
   { threadId = 0
-  , data = initB
-  , stop = False
+  , data     = initB
+  , stop     = False
+  , soFar    = 0
   }
 
 {-| The type of messages you can send to poll:
@@ -84,8 +91,9 @@ update duration actions action model =
   in case action of
     Start modifier ->
       let firstDuration = duration model.data 0
-      in  ( { model' | data = modifier model'.data
-                     , stop = False
+      in  ( { model' | data  = modifier model'.data
+                     , stop  = False
+                     , soFar = 0
             }
           , Task.perform (Debug.crash << toString) (\_ -> Ok <| Invoke threadId firstDuration)
               <| Process.sleep firstDuration
@@ -93,9 +101,10 @@ update duration actions action model =
     Adjust modifier ->
       let newData = modifier.modify model.data
       in if modifier.reset
-      then let firstDuration = duration model.data 0
-      in   ( { model' | data = newData
-                      , stop = False
+      then let firstDuration  = duration model.data 0
+      in   ( { model' | data  = newData
+                      , stop  = False
+                      , soFar = 0
              }
            , Task.perform (Debug.crash << toString) (\_ -> Ok <| Invoke threadId firstDuration)
                <| Process.sleep firstDuration
@@ -108,7 +117,7 @@ update duration actions action model =
       then (model, Cmd.none)
       else if model.threadId - 1 == threadId' -- wouldve been the last id before I added one
       then let newDuration = duration model.data soFar
-      in   ( model'
+      in   ( { model' | soFar = soFar }
            , Cmd.batch
                [ Cmd.map Err <| actions model.data
                , Task.perform Debug.crash (\_ -> Ok <| Invoke threadId newDuration)
@@ -122,3 +131,12 @@ update duration actions action model =
       ( { model | stop = True }
       , Cmd.none
       )
+
+{-|
+Given the duration function and the current state, give the total time that is currently being
+waited. Note that this is assuming there hasn't been a manipulation of the data stored since the
+last issued tick.
+-}
+waitingFor : (b -> Time -> Time) -> Model b -> Time
+waitingFor duration model =
+  duration model.data model.soFar
