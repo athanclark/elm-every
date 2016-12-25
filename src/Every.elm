@@ -87,40 +87,40 @@ update : (b -> Time -> Time)
       -> Model b
       -> (Model b, Cmd (Result a (Msg b)))
 update duration actions action model =
-  let (threadId, model') = freshThreadId model
+  let (threadId, model_) = freshThreadId model
   in case action of
     Start modifier ->
       let firstDuration = duration model.data 0
-      in  ( { model' | data  = modifier model'.data
+      in  ( { model_ | data  = modifier model_.data
                      , stop  = False
                      , soFar = 0
             }
-          , Task.perform (Debug.crash << toString) (\_ -> Ok <| Invoke threadId firstDuration)
+          , Task.perform (\_ -> Ok <| Invoke threadId firstDuration)
               <| Process.sleep firstDuration
           )
     Adjust modifier ->
       let newData = modifier.modify model.data
       in if modifier.reset
       then let firstDuration  = duration model.data 0
-      in   ( { model' | data  = newData
+      in   ( { model_ | data  = newData
                       , stop  = False
                       , soFar = 0
              }
-           , Task.perform (Debug.crash << toString) (\_ -> Ok <| Invoke threadId firstDuration)
+           , Task.perform (\_ -> Ok <| Invoke threadId firstDuration)
                <| Process.sleep firstDuration
            )
       else ( { model | data = newData }
            , Cmd.none
            )
-    Invoke threadId' soFar ->
+    Invoke threadId_ soFar ->
       if model.stop
       then (model, Cmd.none)
-      else if model.threadId - 1 == threadId' -- wouldve been the last id before I added one
+      else if model.threadId - 1 == threadId_ -- wouldve been the last id before I added one
       then let newDuration = duration model.data soFar
-      in   ( { model' | soFar = soFar }
+      in   ( { model_ | soFar = soFar }
            , Cmd.batch
                [ Cmd.map Err <| actions model.data
-               , Task.perform Debug.crash (\_ -> Ok <| Invoke threadId newDuration)
+               , Task.perform (\_ -> Ok <| Invoke threadId newDuration)
                    <| Process.sleep newDuration
                ]
            )
